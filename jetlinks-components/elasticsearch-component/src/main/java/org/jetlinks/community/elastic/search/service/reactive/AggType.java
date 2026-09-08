@@ -20,13 +20,35 @@ public enum AggType {
         public AggregationBuilder aggregationBuilder(String name, String filed) {
             return AggregationBuilders.max(name).field(filed).missing(0);
         }
-
-
+    },
+    MEDIAN("中间值") {
+        @Override
+        public AggregationBuilder aggregationBuilder(String name, String filed) {
+            return AggregationBuilders.medianAbsoluteDeviation(name).field(filed).missing(0);
+        }
+    },
+    STDDEV("标准差") {
+        @Override
+        public AggregationBuilder aggregationBuilder(String name, String filed) {
+            return AggregationBuilders.extendedStats(name)
+                                      .field(filed)
+                                      .missing(0);
+        }
     },
     COUNT("非空值计数") {
         @Override
         public AggregationBuilder aggregationBuilder(String name, String filed) {
             return AggregationBuilders.count(name).field(filed).missing(0);
+        }
+
+    },
+    DISTINCT_COUNT("去重计数") {
+        @Override
+        public AggregationBuilder aggregationBuilder(String name, String filed) {
+            return AggregationBuilders
+                .cardinality(name)
+                .field(filed)
+                .missing(0);
         }
 
     },
@@ -73,7 +95,7 @@ public enum AggType {
                 return type;
             }
         }
-        throw new UnsupportedOperationException("不支持的聚合度量类型：" + name);
+        throw new UnsupportedOperationException("不支持的聚合类型：" + name);
     }
 
 }

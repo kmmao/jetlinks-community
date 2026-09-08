@@ -5,7 +5,7 @@
     <parent>
         <artifactId>jetlinks-community</artifactId>
         <groupId>org.jetlinks.community</groupId>
-        <version>1.11.0-SNAPSHOT</version>
+        <version>2.3.0-SNAPSHOT</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
@@ -52,12 +52,30 @@
         </plugins>
     </build>
 
+    <profiles>
+        <profile>
+            <id>java11</id>
+            <properties>
+                <maven.compiler.source>11</maven.compiler.source>
+                <maven.compiler.target>11</maven.compiler.target>
+                <java.version>11</java.version>
+                <project.build.jdk>11</project.build.jdk>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>org.openjdk.nashorn</groupId>
+                    <artifactId>nashorn-core</artifactId>
+                    <version>15.4</version>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
+
     <dependencies>
 
         <dependency>
-            <groupId>org.hswebframework.web</groupId>
-            <artifactId>hsweb-system-dictionary</artifactId>
-            <version>${hsweb.framework.version}</version>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-cbor</artifactId>
         </dependency>
 
         <dependency>
@@ -73,7 +91,6 @@
         <dependency>
             <groupId>org.hswebframework.web</groupId>
             <artifactId>hsweb-system-dictionary</artifactId>
-            <version>${hsweb.framework.version}</version>
         </dependency>
 
         <dependency>
@@ -143,12 +160,6 @@
         </dependency>
 
         <dependency>
-            <groupId>${project.groupId}</groupId>
-            <artifactId>visualization-manager</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <dependency>
             <groupId>org.jetlinks</groupId>
             <artifactId>jetlinks-supports</artifactId>
             <version>${jetlinks.version}</version>
@@ -159,23 +170,30 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-<!--        <dependency>-->
-<!--            <groupId>org.springframework.boot</groupId>-->
-<!--            <artifactId>spring-boot-starter-actuator</artifactId>-->
-<!--        </dependency>-->
+        <!--        <dependency>-->
+        <!--            <groupId>org.springframework.boot</groupId>-->
+        <!--            <artifactId>spring-boot-starter-actuator</artifactId>-->
+        <!--        </dependency>-->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-r2dbc</artifactId>
         </dependency>
 
+        <!--        <dependency>-->
+        <!--            <groupId>dev.miku</groupId>-->
+        <!--            <artifactId>r2dbc-mysql</artifactId>-->
+        <!--        </dependency>-->
+
+        <!-- https://github.com/mirromutth/r2dbc-mysql/issues/251 -->
         <dependency>
-            <groupId>dev.miku</groupId>
+            <groupId>io.asyncer</groupId>
             <artifactId>r2dbc-mysql</artifactId>
+            <version>0.9.3</version>
         </dependency>
 
         <dependency>
-            <groupId>io.r2dbc</groupId>
+            <groupId>org.postgresql</groupId>
             <artifactId>r2dbc-postgresql</artifactId>
         </dependency>
 
@@ -231,13 +249,11 @@
         <dependency>
             <groupId>de.ruedigermoeller</groupId>
             <artifactId>fst</artifactId>
-            <version>2.57</version>
         </dependency>
 
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-webflux-ui</artifactId>
-            <version>1.5.3</version>
         </dependency>
 
         <dependency>
@@ -246,6 +262,17 @@
             <version>2.0.8</version>
         </dependency>
 
+        <dependency>
+            <groupId>org.jetlinks.community</groupId>
+            <artifactId>configure-component</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetlinks.community</groupId>
+            <artifactId>tdengine-component</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
 

@@ -15,14 +15,14 @@ import org.jetlinks.rule.engine.api.model.RuleEngineModelParser;
 import org.jetlinks.rule.engine.api.model.RuleModel;
 import org.reactivestreams.Publisher;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Service
 @Slf4j
-public class RuleInstanceService extends GenericReactiveCrudService<RuleInstanceEntity, String> implements CommandLineRunner {
+public class RuleInstanceService extends GenericReactiveCrudService<RuleInstanceEntity, String> {
 
     @Autowired
     private RuleEngine ruleEngine;
@@ -41,16 +41,18 @@ public class RuleInstanceService extends GenericReactiveCrudService<RuleInstance
         return elasticSearchService.queryPager(RuleEngineLoggerIndexProvider.RULE_LOG, queryParam, RuleEngineExecuteLogInfo.class);
     }
 
+    @Transactional
     public Mono<Void> stop(String id) {
         return this.ruleEngine
             .shutdown(id)
             .then(createUpdate()
-                      .set(RuleInstanceEntity::getState, RuleInstanceState.stopped)
+                      .set(RuleInstanceEntity::getState, RuleInstanceState.disable)
                       .where(RuleInstanceEntity::getId, id)
                       .execute())
             .then();
     }
 
+    @Transactional
     public Mono<Void> start(String id) {
         return findById(Mono.just(id))
             .flatMap(this::doStart);
@@ -75,18 +77,4 @@ public class RuleInstanceService extends GenericReactiveCrudService<RuleInstance
                    .as(super::deleteById);
     }
 
-    @Override
-    public void run(String... args) {
-        createQuery()
-            .where()
-            .is(RuleInstanceEntity::getState, RuleInstanceState.started)
-            .fetch()
-            .flatMap(e -> this
-                .doStart(e)
-                .onErrorResume(err -> {
-                    log.warn("启动规则[{}]失败", e.getName(), e);
-                    return Mono.empty();
-                }))
-            .subscribe();
-    }
 }

@@ -1,7 +1,8 @@
 package org.jetlinks.community.elastic.search.service.reactive;
 
 import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.alibaba.fastjson.JSONObject;
+import lombok.Generated;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.client.methods.HttpGet;
@@ -16,6 +17,9 @@ import org.elasticsearch.Version;
 import org.elasticsearch.action.ActionRequest;
 import org.elasticsearch.action.DocWriteRequest;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
+import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.elasticsearch.action.admin.indices.alias.IndicesAliasesRequest;
+import org.elasticsearch.action.admin.indices.alias.get.GetAliasesRequest;
 import org.elasticsearch.action.admin.indices.close.CloseIndexRequest;
 import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest;
@@ -28,6 +32,9 @@ import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
 import org.elasticsearch.action.admin.indices.open.OpenIndexRequest;
 import org.elasticsearch.action.admin.indices.refresh.RefreshRequest;
 import org.elasticsearch.action.admin.indices.refresh.RefreshResponse;
+import org.elasticsearch.action.admin.indices.settings.get.GetSettingsRequest;
+import org.elasticsearch.action.admin.indices.settings.get.GetSettingsResponse;
+import org.elasticsearch.action.admin.indices.template.delete.DeleteIndexTemplateRequest;
 import org.elasticsearch.action.admin.indices.template.get.GetIndexTemplatesRequest;
 import org.elasticsearch.action.admin.indices.template.get.GetIndexTemplatesResponse;
 import org.elasticsearch.action.admin.indices.template.put.PutIndexTemplateRequest;
@@ -35,10 +42,7 @@ import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.delete.DeleteResponse;
-import org.elasticsearch.action.get.GetRequest;
-import org.elasticsearch.action.get.GetResponse;
-import org.elasticsearch.action.get.MultiGetRequest;
-import org.elasticsearch.action.get.MultiGetResponse;
+import org.elasticsearch.action.get.*;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.action.main.MainRequest;
@@ -50,40 +54,53 @@ import org.elasticsearch.action.support.WriteRequest;
 import org.elasticsearch.action.support.master.AcknowledgedResponse;
 import org.elasticsearch.action.update.UpdateRequest;
 import org.elasticsearch.action.update.UpdateResponse;
+import org.elasticsearch.client.GetAliasesResponse;
 import org.elasticsearch.client.Request;
+import org.elasticsearch.client.indices.GetFieldMappingsRequest;
+import org.elasticsearch.client.indices.GetFieldMappingsResponse;
+import org.elasticsearch.client.indices.GetIndexResponse;
+import org.elasticsearch.client.indices.IndexTemplatesExistRequest;
+import org.elasticsearch.client.tasks.TaskSubmissionResponse;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.common.Priority;
 import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.lucene.uid.Versions;
-import org.elasticsearch.common.unit.TimeValue;
-import org.elasticsearch.common.xcontent.*;
+import org.elasticsearch.common.xcontent.XContentHelper;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.index.VersionType;
 import org.elasticsearch.index.get.GetResult;
 import org.elasticsearch.index.reindex.BulkByScrollResponse;
 import org.elasticsearch.index.reindex.DeleteByQueryRequest;
+import org.elasticsearch.index.reindex.ReindexRequest;
+import org.elasticsearch.index.reindex.UpdateByQueryRequest;
 import org.elasticsearch.index.seqno.SequenceNumbers;
 import org.elasticsearch.rest.BytesRestResponse;
 import org.elasticsearch.rest.RestStatus;
+import org.elasticsearch.script.mustache.SearchTemplateRequest;
+import org.elasticsearch.script.mustache.SearchTemplateResponse;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.aggregations.Aggregation;
 import org.elasticsearch.search.fetch.subphase.FetchSourceContext;
+import org.elasticsearch.search.internal.SearchContext;
+import org.elasticsearch.search.suggest.Suggest;
 import org.elasticsearch.tasks.TaskId;
+import org.elasticsearch.xcontent.*;
 import org.reactivestreams.Publisher;
 import org.springframework.data.elasticsearch.client.ClientLogger;
 import org.springframework.data.elasticsearch.client.ElasticsearchHost;
 import org.springframework.data.elasticsearch.client.NoReachableHostException;
 import org.springframework.data.elasticsearch.client.reactive.HostProvider;
-import org.springframework.data.elasticsearch.client.reactive.RequestBodyEncodingException;
 import org.springframework.data.elasticsearch.client.reactive.RequestCreator;
 import org.springframework.data.elasticsearch.client.util.NamedXContents;
 import org.springframework.data.elasticsearch.client.util.RequestConverters;
 import org.springframework.data.elasticsearch.client.util.ScrollState;
+import org.springframework.data.elasticsearch.core.ResponseConverter;
+import org.springframework.data.elasticsearch.core.query.ByQueryResponse;
 import org.springframework.data.util.Lazy;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
@@ -93,16 +110,17 @@ import org.springframework.web.reactive.function.BodyExtractors;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.EmitterProcessor;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
+import reactor.function.Function3;
 
+import javax.annotation.Nonnull;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.ConnectException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Locale;
 import java.util.Map;
@@ -113,7 +131,9 @@ import java.util.function.Supplier;
 import static org.springframework.data.elasticsearch.client.util.RequestConverters.createContentType;
 
 @Slf4j
-public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearchClient {
+@Generated
+public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearchClient,
+    org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Cluster {
     private final HostProvider<?> hostProvider;
     private final RequestCreator requestCreator;
     private Supplier<HttpHeaders> headersSupplier = () -> HttpHeaders.EMPTY;
@@ -132,11 +152,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
 
         this.hostProvider = hostProvider;
         this.requestCreator = requestCreator;
-        info()
-            .subscribe(mainResponse -> {
-                log.debug("connect elasticsearch server : {}", JSON.toJSONString(mainResponse, SerializerFeature.PrettyFormat));
-                version = mainResponse.getVersion();
-            });
+        version = info().block(Duration.ofSeconds(10)).getVersion();
     }
 
     public void setHeadersSupplier(Supplier<HttpHeaders> headersSupplier) {
@@ -153,9 +169,10 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Mono<Boolean> ping(HttpHeaders headers) {
 
-        return sendRequest(new MainRequest(), requestCreator.ping(), RawActionResponse.class, headers) //
-            .map(response -> response.statusCode().is2xxSuccessful()) //
-            .onErrorResume(NoReachableHostException.class, error -> Mono.just(false)).next();
+        return sendRequest(new MainRequest(), requestCreator.ping(), RawActionResponse.class, headers)
+            .flatMap(response -> response.releaseBody().thenReturn(response.statusCode().is2xxSuccessful()))
+            .onErrorResume(NoReachableHostException.class, error -> Mono.just(false))
+            .next();
     }
 
     /*
@@ -166,7 +183,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<MainResponse> info(HttpHeaders headers) {
 
         return sendRequest(new MainRequest(), requestCreator.info(), MainResponse.class, headers) //
-            .next();
+                                                                                                  .next();
     }
 
     /*
@@ -177,9 +194,9 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<GetResult> get(HttpHeaders headers, GetRequest getRequest) {
 
         return sendRequest(getRequest, requestCreator.get(), GetResponse.class, headers) //
-            .filter(GetResponse::isExists) //
-            .map(DefaultReactiveElasticsearchClient::getResponseToGetResult) //
-            .next();
+                                                                                         .filter(GetResponse::isExists) //
+                                                                                         .map(DefaultReactiveElasticsearchClient::getResponseToGetResult) //
+                                                                                         .next();
     }
 
     /*
@@ -187,13 +204,11 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
      * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient#multiGet(org.springframework.http.HttpHeaders, org.elasticsearch.action.get.MultiGetRequest)
      */
     @Override
-    public Flux<GetResult> multiGet(HttpHeaders headers, MultiGetRequest multiGetRequest) {
+    public Flux<MultiGetItemResponse> multiGet(HttpHeaders headers, MultiGetRequest multiGetRequest) {
 
         return sendRequest(multiGetRequest, requestCreator.multiGet(), MultiGetResponse.class, headers)
             .map(MultiGetResponse::getResponses) //
-            .flatMap(Flux::fromArray) //
-            .filter(it -> !it.isFailed() && it.getResponse().isExists()) //
-            .map(it -> DefaultReactiveElasticsearchClient.getResponseToGetResult(it.getResponse()));
+            .flatMap(Flux::fromArray); //
     }
 
     /*
@@ -203,8 +218,10 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Mono<Boolean> exists(HttpHeaders headers, GetRequest getRequest) {
 
-        return sendRequest(getRequest, requestCreator.exists(), RawActionResponse.class, headers) //
-            .map(response -> response.statusCode().is2xxSuccessful()) //
+        return sendRequest(getRequest, requestCreator.exists(), RawActionResponse.class, headers)
+            .flatMap(response -> response.releaseBody().thenReturn(response
+                                                                       .statusCode()
+                                                                       .is2xxSuccessful()))
             .next();
     }
 
@@ -222,7 +239,12 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
      * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient#indices()
      */
     @Override
-    public org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Indices indices() {
+    public Indices indices() {
+        return this;
+    }
+
+    @Override
+    public Cluster cluster() {
         return this;
     }
 
@@ -243,7 +265,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<DeleteResponse> delete(HttpHeaders headers, DeleteRequest deleteRequest) {
 
         return sendRequest(deleteRequest, requestCreator.delete(), DeleteResponse.class, headers) //
-            .publishNext();
+                                                                                                  .publishNext();
     }
 
     /*
@@ -255,10 +277,30 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         searchRequest.source().trackTotalHits(true);
         searchRequest.source().size(0);
         searchRequest.source().fetchSource(false);
-        return sendRequest(searchRequest, requestCreator.search(), SearchResponse.class, headers) //
-            .map(SearchResponse::getHits) //
-            .map(searchHits -> searchHits.getTotalHits().value) //
+        return sendRequest(searchRequest, this::buildSearchRequest, SearchResponse.class, headers)
+            .map(SearchResponse::getHits)
+            .map(searchHits -> searchHits.getTotalHits().value)
             .next();
+    }
+
+    @Override
+    public Flux<SearchHit> searchTemplate(HttpHeaders headers, SearchTemplateRequest searchTemplateRequest) {
+        return sendRequest(searchTemplateRequest, requestCreator.searchTemplate(), SearchTemplateResponse.class, headers)
+            .map(response -> response.getResponse().getHits()).flatMap(Flux::fromIterable);
+    }
+
+    protected Request buildSearchRequest(SearchRequest request) {
+        //兼容6.x版本es
+        if (version.before(Version.V_7_0_0) && request
+            .source()
+            .trackTotalHitsUpTo() != SearchContext.TRACK_TOTAL_HITS_DISABLED) {
+            Request req = requestCreator.search().apply(request);
+            JSONObject json = JSON.parseObject(requestBodyToString(req));
+            json.put("track_total_hits", true);
+            req.setJsonEntity(json.toJSONString());
+            return req;
+        }
+        return requestCreator.search().apply(request);
     }
 
     /*
@@ -268,9 +310,20 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Flux<SearchHit> search(HttpHeaders headers, SearchRequest searchRequest) {
 
+        return sendRequest(searchRequest, this::buildSearchRequest, SearchResponse.class, headers) //
+                                                                                                   .map(SearchResponse::getHits) //
+                                                                                                   .flatMap(Flux::fromIterable);
+    }
+
+    @Override
+    public Mono<SearchResponse> searchForResponse(HttpHeaders headers, SearchRequest searchRequest) {
+        return sendRequest(searchRequest, requestCreator.search(), SearchResponse.class, headers).next();
+    }
+
+    @Override
+    public Flux<Suggest> suggest(HttpHeaders headers, SearchRequest searchRequest) {
         return sendRequest(searchRequest, requestCreator.search(), SearchResponse.class, headers) //
-            .map(SearchResponse::getHits) //
-            .flatMap(Flux::fromIterable);
+                                                                                                  .map(SearchResponse::getSuggest);
     }
 
     /*
@@ -286,17 +339,13 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         searchRequest.source().size(0);
         searchRequest.source().trackTotalHits(false);
 
-        return sendRequest(searchRequest, requestCreator.search(), SearchResponse.class, headers) //
-            .map(SearchResponse::getAggregations) //
-            .flatMap(Flux::fromIterable);
+        return sendRequest(searchRequest, this::buildSearchRequest, SearchResponse.class, headers) //
+                                                                                                   .map(SearchResponse::getAggregations) //
+                                                                                                   .flatMap(Flux::fromIterable);
     }
 
-    /*
-     * (non-Javadoc)
-     * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient#scroll(org.springframework.http.HttpHeaders, org.elasticsearch.action.search.SearchRequest)
-     */
-    @Override
-    public Flux<SearchHit> scroll(HttpHeaders headers, SearchRequest searchRequest) {
+    @Override@Nonnull
+    public Flux<SearchHit> scroll(@Nonnull HttpHeaders headers, SearchRequest searchRequest) {
 
         TimeValue scrollTimeout = searchRequest.scroll() != null ? searchRequest.scroll().keepAlive()
             : TimeValue.timeValueMinutes(1);
@@ -305,58 +354,31 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
             searchRequest.scroll(scrollTimeout);
         }
 
-        EmitterProcessor<ActionRequest> outbound = EmitterProcessor.create(false);
-        FluxSink<ActionRequest> request = outbound.sink();
+        return Flux
+            .usingWhen(Mono.fromSupplier(ScrollState::new),
+                       state -> this
+                           .sendRequest(searchRequest, requestCreator.search(), SearchResponse.class, headers)
+                           .expand(searchResponse -> {
 
-        EmitterProcessor<SearchResponse> inbound = EmitterProcessor.create(false);
+                               state.updateScrollId(searchResponse.getScrollId());
+                               if (isEmpty(searchResponse.getHits())) {
+                                   return Mono.empty();
+                               }
 
-        Flux<SearchResponse> exchange = outbound.startWith(searchRequest).flatMap(it -> {
+                               return this
+                                   .sendRequest(new SearchScrollRequest(searchResponse.getScrollId()).scroll(scrollTimeout),
+                                                requestCreator.scroll(),
+                                                SearchResponse.class,
+                                                headers);
 
-            if (it instanceof SearchRequest) {
-                return sendRequest((SearchRequest) it, requestCreator.search(), SearchResponse.class, headers);
-            } else if (it instanceof SearchScrollRequest) {
-                return sendRequest((SearchScrollRequest) it, requestCreator.scroll(), SearchResponse.class, headers);
-            } else if (it instanceof ClearScrollRequest) {
-                return sendRequest((ClearScrollRequest) it, requestCreator.clearScroll(), ClearScrollResponse.class, headers)
-                    .flatMap(discard -> Flux.empty());
-            }
-
-            throw new IllegalArgumentException(
-                String.format("Cannot handle '%s'. Please make sure to use a 'SearchRequest' or 'SearchScrollRequest'.", it));
-        });
-
-        return Flux.usingWhen(Mono.fromSupplier(ScrollState::new),
-
-            scrollState -> {
-
-                Flux<SearchHit> searchHits = inbound.<SearchResponse>handle((searchResponse, sink) -> {
-
-                    scrollState.updateScrollId(searchResponse.getScrollId());
-                    if (isEmpty(searchResponse.getHits())) {
-
-                        inbound.onComplete();
-                        outbound.onComplete();
-
-                    } else {
-
-                        sink.next(searchResponse);
-
-                        SearchScrollRequest searchScrollRequest = new SearchScrollRequest(scrollState.getScrollId())
-                            .scroll(scrollTimeout);
-                        request.next(searchScrollRequest);
-                    }
-
-                }).map(SearchResponse::getHits) //
-                    .flatMap(Flux::fromIterable);
-
-                return searchHits.doOnSubscribe(ignore -> exchange.subscribe(inbound));
-
-            },
-            state -> cleanupScroll(headers, state), //
-            (state, error) -> cleanupScroll(headers, state), //
-            state -> cleanupScroll(headers, state)); //
+                           }),
+                       state -> cleanupScroll(headers, state),
+                       (state, ex) -> cleanupScroll(headers, state),
+                       state -> cleanupScroll(headers, state))
+            .filter(it -> !isEmpty(it.getHits()))
+            .map(SearchResponse::getHits)
+            .flatMapIterable(Function.identity());
     }
-
     private static boolean isEmpty(@Nullable SearchHits hits) {
         return hits != null && hits.getHits() != null && hits.getHits().length == 0;
     }
@@ -382,21 +404,28 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<BulkByScrollResponse> deleteBy(HttpHeaders headers, DeleteByQueryRequest deleteRequest) {
 
         return sendRequest(deleteRequest, requestCreator.deleteByQuery(), BulkByScrollResponse.class, headers) //
-            .publishNext();
+                                                                                                               .publishNext();
+    }
+
+    @Override
+    public Mono<ByQueryResponse> updateBy(HttpHeaders headers, UpdateByQueryRequest updateRequest) {
+        return sendRequest(updateRequest, requestCreator.updateByQuery(), BulkByScrollResponse.class, headers)
+            .next()
+            .map(ResponseConverter::byQueryResponseOf);
     }
 
     static XContentType enforceSameContentType(IndexRequest indexRequest, @Nullable XContentType xContentType) {
         XContentType requestContentType = indexRequest.getContentType();
         if (requestContentType != XContentType.JSON && requestContentType != XContentType.SMILE) {
             throw new IllegalArgumentException("Unsupported content-type found for request with content-type ["
-                + requestContentType + "], only JSON and SMILE are supported");
+                                                   + requestContentType + "], only JSON and SMILE are supported");
         }
         if (xContentType == null) {
             return requestContentType;
         }
         if (requestContentType != xContentType) {
             throw new IllegalArgumentException("Mismatching content-type found for request with content-type ["
-                + requestContentType + "], previous requests have content-type [" + xContentType + ']');
+                                                   + requestContentType + "], previous requests have content-type [" + xContentType + ']');
         }
         return xContentType;
     }
@@ -542,7 +571,18 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Mono<BulkResponse> bulk(HttpHeaders headers, BulkRequest bulkRequest) {
         return sendRequest(bulkRequest, this::convertBulk, BulkResponse.class, headers) //
-            .publishNext();
+                                                                                        .publishNext();
+    }
+
+    @Override
+    public Mono<BulkByScrollResponse> reindex(HttpHeaders headers, ReindexRequest reindexRequest) {
+        return sendRequest(reindexRequest, requestCreator.reindex(), BulkByScrollResponse.class, headers).next();
+    }
+
+    @Override
+    public Mono<String> submitReindex(HttpHeaders headers, ReindexRequest reindexRequest) {
+        return sendRequest(reindexRequest, requestCreator.submitReindex(), TaskSubmissionResponse.class, headers).next()
+                                                                                                                 .map(TaskSubmissionResponse::getTask);
     }
 
     // --> INDICES
@@ -554,9 +594,24 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Mono<Boolean> existsIndex(HttpHeaders headers, GetIndexRequest request) {
         return sendRequest(request, requestCreator.indexExists()
-            , RawActionResponse.class, headers) //
-            .map(response -> response.statusCode().is2xxSuccessful())
+            , RawActionResponse.class, headers)
+            .flatMap(response -> response
+                .releaseBody()
+                .thenReturn(response
+                                .statusCode()
+                                .is2xxSuccessful()))
             .onErrorReturn(false)
+            .next();
+    }
+
+    @Override
+    public Mono<Boolean> existsIndex(HttpHeaders headers, org.elasticsearch.client.indices.GetIndexRequest getIndexRequest) {
+        return sendRequest(getIndexRequest, requestCreator.indexExistsRequest(), RawActionResponse.class, headers)
+            .flatMap(response -> response
+                .releaseBody()
+                .thenReturn(response
+                                .statusCode()
+                                .is2xxSuccessful()))
             .next();
     }
 
@@ -565,10 +620,11 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
      * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Indices#deleteIndex(org.springframework.http.HttpHeaders, org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest)
      */
     @Override
-    public Mono<Void> deleteIndex(HttpHeaders headers, DeleteIndexRequest request) {
+    public Mono<Boolean> deleteIndex(HttpHeaders headers, DeleteIndexRequest request) {
 
-        return sendRequest(request, requestCreator.indexDelete(), AcknowledgedResponse.class, headers) //
-            .then();
+        return sendRequest(request, requestCreator.indexDelete(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged)
+            .next();
     }
 
     /*
@@ -576,13 +632,21 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
      * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Indices#createIndex(org.springframework.http.HttpHeaders, org.elasticsearch.action.admin.indices.create.CreateIndexRequest)
      */
     @Override
-    public Mono<Void> createIndex(HttpHeaders headers, CreateIndexRequest createIndexRequest) {
+    public Mono<Boolean> createIndex(HttpHeaders headers, CreateIndexRequest createIndexRequest) {
 
         return sendRequest(createIndexRequest, requestCreator.indexCreate().andThen(request -> {
             request.addParameter("include_type_name", "true");
             return request;
-        }), AcknowledgedResponse.class, headers) //
-            .then();
+        }), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged)
+            .next();
+    }
+
+    @Override
+    public Mono<Boolean> createIndex(HttpHeaders headers, org.elasticsearch.client.indices.CreateIndexRequest createIndexRequest) {
+        return sendRequest(createIndexRequest, requestCreator.createIndexRequest(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged)
+            .next();
     }
 
     /*
@@ -592,15 +656,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     @Override
     public Mono<Void> openIndex(HttpHeaders headers, OpenIndexRequest request) {
 
-        return sendRequest(
-            request,
-            requestCreator
-                .indexOpen()
-                .andThen(r -> {
-                    r.addParameter("include_type_name", "true");
-                    return r;
-                }),
-            AcknowledgedResponse.class, headers) //
+        return sendRequest(request, requestCreator.indexOpen(), AcknowledgedResponse.class, headers)
             .then();
     }
 
@@ -612,7 +668,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<Void> closeIndex(HttpHeaders headers, CloseIndexRequest closeIndexRequest) {
 
         return sendRequest(closeIndexRequest, requestCreator.indexClose(), AcknowledgedResponse.class, headers) //
-            .then();
+                                                                                                                .then();
     }
 
     /*
@@ -623,20 +679,36 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<Void> refreshIndex(HttpHeaders headers, RefreshRequest refreshRequest) {
 
         return sendRequest(refreshRequest, requestCreator.indexRefresh(), RefreshResponse.class, headers) //
-            .then();
+                                                                                                          .then();
     }
 
-    /*
-     * (non-Javadoc)
-     * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Indices#updateMapping(org.springframework.http.HttpHeaders, org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest)
-     */
     @Override
-    public Mono<Void> updateMapping(HttpHeaders headers, PutMappingRequest putMappingRequest) {
+    public Mono<Boolean> putMapping(HttpHeaders headers, PutMappingRequest putMappingRequest) {
+        return sendRequest(putMappingRequest, requestCreator.putMapping(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged)
+            .next();
+    }
 
-        return sendRequest(putMappingRequest
-            , requestCreator.putMapping()
-            , AcknowledgedResponse.class, headers) //
-            .then();
+    @Override
+    public Mono<Boolean> putMapping(HttpHeaders headers, org.elasticsearch.client.indices.PutMappingRequest putMappingRequest) {
+
+        return sendRequest(putMappingRequest, this::createPutMapping, AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged)
+            .next();
+    }
+
+    private Request createPutMapping(org.elasticsearch.client.indices.PutMappingRequest putMappingRequest) {
+        Request request = requestCreator.putMappingRequest().apply(putMappingRequest);
+        Request newReq = new Request(request.getMethod(), request.getEndpoint());
+
+        Params params = new Params(newReq)
+            .withTimeout(putMappingRequest.timeout())
+            .withMasterTimeout(putMappingRequest.masterNodeTimeout());
+        if (serverVersion().before(Version.V_7_0_0)) {
+            params.putParam("include_type_name", "false");
+        }
+        newReq.setEntity(request.getEntity());
+        return newReq;
     }
 
     /*
@@ -647,7 +719,12 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     public Mono<Void> flushIndex(HttpHeaders headers, FlushRequest flushRequest) {
 
         return sendRequest(flushRequest, requestCreator.flushIndex(), FlushResponse.class, headers) //
-            .then();
+                                                                                                    .then();
+    }
+
+    @Override
+    public Mono<GetSettingsResponse> getSettings(HttpHeaders headers, GetSettingsRequest getSettingsRequest) {
+        return sendRequest(getSettingsRequest, requestCreator.getSettings(), GetSettingsResponse.class, headers).next();
     }
 
     /*
@@ -655,27 +732,42 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
      * @see org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient#ping(org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.ReactiveElasticsearchClientCallback)
      */
     @Override
-    public Mono<ClientResponse> execute(org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.ReactiveElasticsearchClientCallback callback) {
+    public <T> Mono<T> execute(ReactiveElasticsearchClientCallback<T> callback) {
 
-        return this.hostProvider.getActive(HostProvider.Verification.LAZY) //
+        return this.hostProvider
+            .getActive(HostProvider.Verification.LAZY) //
             .flatMap(callback::doWithClient) //
             .onErrorResume(throwable -> {
 
-                if (throwable instanceof ConnectException) {
-
+                if (isCausedByConnectionException(throwable)) {
                     return hostProvider.getActive(HostProvider.Verification.ACTIVE) //
-                        .flatMap(callback::doWithClient);
+                                       .flatMap(callback::doWithClient);
                 }
 
                 return Mono.error(throwable);
             });
     }
 
+    private boolean isCausedByConnectionException(Throwable throwable) {
+
+        Throwable t = throwable;
+        do {
+
+            if (t instanceof ConnectException) {
+                return true;
+            }
+
+            t = t.getCause();
+        } while (t != null);
+
+        return false;
+    }
+
     @Override
-    public Mono<org.springframework.data.elasticsearch.client.reactive.ReactiveElasticsearchClient.Status> status() {
+    public Mono<Status> status() {
 
         return hostProvider.clusterInfo() //
-            .map(it -> new ClientStatus(it.getNodes()));
+                           .map(it -> new ClientStatus(it.getNodes()));
     }
 
     // --> Private Response helpers
@@ -683,14 +775,14 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
     private static GetResult getResponseToGetResult(GetResponse response) {
 
         return new GetResult(response.getIndex(), response.getType(), response.getId(), response.getSeqNo(),
-            response.getPrimaryTerm(), response.getVersion(), response.isExists(), response.getSourceAsBytesRef(),
-            response.getFields(), null);
+                             response.getPrimaryTerm(), response.getVersion(), response.isExists(), response.getSourceAsBytesRef(),
+                             response.getFields(), null);
     }
 
     // -->
 
-    private <Req extends ActionRequest, Resp> Flux<Resp> sendRequest(Req request, Function<Req, Request> converter,
-                                                                     Class<Resp> responseType, HttpHeaders headers) {
+    private <REQ, RESP> Flux<RESP> sendRequest(REQ request, Function<REQ, Request> converter, Class<RESP> responseType,
+                                               HttpHeaders headers) {
         return sendRequest(converter.apply(request), responseType, headers);
     }
 
@@ -698,77 +790,124 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
 
         String logId = ClientLogger.newLogId();
 
-        return execute(webClient -> sendRequest(webClient, logId, request, headers))
-            .flatMapMany(response -> readResponseBody(logId, request, response, responseType));
+        return Flux
+            .from(execute(webClient -> sendRequest(webClient, logId, request, headers).exchangeToMono(clientResponse -> {
+                Publisher<? extends Resp> publisher = readResponseBody(logId, request, clientResponse, responseType);
+                return Mono.from(publisher);
+            })));
     }
 
-    private Mono<ClientResponse> sendRequest(WebClient webClient, String logId, Request request, HttpHeaders headers) {
+    private <Req extends ActionRequest, Resp> Flux<Resp> sendRequest(Req request,
+                                                                     Function<Req, Request> converter,
+                                                                     Class<Resp> responseType,
+                                                                     HttpHeaders headers) {
+        return sendRequest(request, converter, responseType, headers, DefaultReactiveElasticsearchClient::doDecode);
+    }
 
-        WebClient.RequestBodySpec requestBodySpec = webClient.method(HttpMethod.valueOf(request.getMethod().toUpperCase())) //
-            .uri(builder -> {
+    private <Req extends ActionRequest, Resp> Flux<Resp> sendRequest(Req request,
+                                                                     Function<Req, Request> converter,
+                                                                     Class<Resp> responseType,
+                                                                     HttpHeaders headers,
+                                                                     Function3<ClientResponse, Class<Resp>, String, Mono<Resp>> decoder) {
+        return sendRequest(converter.apply(request), responseType, headers, decoder);
+    }
 
-                builder = builder.path(request.getEndpoint());
+    private <Resp> Flux<Resp> sendRequest(Request request,
+                                          Class<Resp> responseType,
+                                          HttpHeaders headers,
+                                          Function3<ClientResponse, Class<Resp>, String, Mono<Resp>> decoder) {
 
-                if (!ObjectUtils.isEmpty(request.getParameters())) {
-                    for (Map.Entry<String, String> entry : request.getParameters().entrySet()) {
-                        builder = builder.queryParam(entry.getKey(), entry.getValue());
-                    }
-                }
-                return builder.build();
-            }) //
-            .attribute(ClientRequest.LOG_ID_ATTRIBUTE, logId) //
-            .headers(theHeaders -> {
+        String logId = ClientLogger.newLogId();
 
-                // add all the headers explicitly set
-                theHeaders.addAll(headers);
-
-                // and now those that might be set on the request.
-                if (request.getOptions() != null) {
-
-                    if (!ObjectUtils.isEmpty(request.getOptions().getHeaders())) {
-                        request.getOptions().getHeaders().forEach(it -> theHeaders.add(it.getName(), it.getValue()));
-                    }
-                }
-
-                // plus the ones from the supplier
-                HttpHeaders suppliedHeaders = headersSupplier.get();
-                if (suppliedHeaders != null && suppliedHeaders != HttpHeaders.EMPTY) {
-                    theHeaders.addAll(suppliedHeaders);
-                }
+        return execute(webClient -> Mono.just(this.sendRequest(webClient, logId, request, headers)))
+            .flatMapMany(spec -> {
+                return spec.exchangeToFlux(response -> {
+                    return Flux.from(
+                                   this.readResponseBody(logId, request, response, responseType, decoder)
+                               )
+                               .cast(responseType);
+                });
             });
+    }
+
+    private WebClient.RequestBodySpec sendRequest(WebClient webClient, String logId, Request request, HttpHeaders headers) {
+
+        WebClient.RequestBodySpec requestBodySpec = webClient.method(HttpMethod.valueOf(request
+                                                                                            .getMethod()
+                                                                                            .toUpperCase())) //
+                                                             .uri(builder -> {
+
+                                                                 builder = builder.path(request.getEndpoint());
+
+                                                                 if (!ObjectUtils.isEmpty(request.getParameters())) {
+                                                                     for (Map.Entry<String, String> entry : request
+                                                                         .getParameters()
+                                                                         .entrySet()) {
+                                                                         builder = builder.queryParam(entry.getKey(), entry.getValue());
+                                                                     }
+                                                                 }
+                                                                 return builder.build();
+                                                             }) //
+                                                             .attribute(ClientRequest.LOG_ID_ATTRIBUTE, logId) //
+                                                             .headers(theHeaders -> {
+
+                                                                 // add all the headers explicitly set
+                                                                 theHeaders.addAll(headers);
+
+                                                                 // and now those that might be set on the request.
+                                                                 if (request.getOptions() != null) {
+
+                                                                     if (!ObjectUtils.isEmpty(request
+                                                                                                  .getOptions()
+                                                                                                  .getHeaders())) {
+                                                                         request
+                                                                             .getOptions()
+                                                                             .getHeaders()
+                                                                             .forEach(it -> theHeaders.add(it.getName(), it.getValue()));
+                                                                     }
+                                                                 }
+                                                             });
 
         if (request.getEntity() != null) {
 
             Lazy<String> body = bodyExtractor(request);
 
-            ClientLogger.logRequest(logId, request.getMethod().toUpperCase(), request.getEndpoint(), request.getParameters(),
-                body::get);
+            ClientLogger.logRequest(logId, request
+                                        .getMethod()
+                                        .toUpperCase(), request.getEndpoint(), request.getParameters(),
+                                    body::get);
 
-            requestBodySpec.contentType(MediaType.valueOf(request.getEntity().getContentType().getValue()));
-            requestBodySpec.body(Mono.fromSupplier(body), String.class);
+            requestBodySpec.contentType(MediaType.valueOf(request.getEntity().getContentType().getValue()))
+                           .body(Mono.fromSupplier(body), String.class);
         } else {
-            ClientLogger.logRequest(logId, request.getMethod().toUpperCase(), request.getEndpoint(), request.getParameters());
+            ClientLogger.logRequest(logId, request
+                .getMethod()
+                .toUpperCase(), request.getEndpoint(), request.getParameters());
         }
 
-        return requestBodySpec //
-            .exchange() //
-            .onErrorReturn(ConnectException.class, ClientResponse.create(HttpStatus.SERVICE_UNAVAILABLE).build());
+        return requestBodySpec;
     }
 
     private Lazy<String> bodyExtractor(Request request) {
 
-        return Lazy.of(() -> {
+        return Lazy.of(() -> requestBodyToString(request));
+    }
 
-            try {
-                return EntityUtils.toString(request.getEntity());
-            } catch (IOException e) {
-                throw new RequestBodyEncodingException("Error encoding request", e);
-            }
-        });
+    @SneakyThrows
+    private String requestBodyToString(Request request) {
+        return EntityUtils.toString(request.getEntity());
     }
 
     private <T> Publisher<? extends T> readResponseBody(String logId, Request request, ClientResponse response,
                                                         Class<T> responseType) {
+        return readResponseBody(logId, request, response, responseType, DefaultReactiveElasticsearchClient::doDecode);
+    }
+
+    private <T> Publisher<? extends T> readResponseBody(String logId,
+                                                        Request request,
+                                                        ClientResponse response,
+                                                        Class<T> responseType,
+                                                        Function3<ClientResponse, Class<T>, String, Mono<T>> decoder) {
 
         if (RawActionResponse.class.equals(responseType)) {
 
@@ -789,53 +928,79 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         }
 
         return response.body(BodyExtractors.toMono(byte[].class)) //
-            .map(it -> new String(it, StandardCharsets.UTF_8)) //
-            .doOnNext(it -> ClientLogger.logResponse(logId, response.statusCode(), it)) //
-            .flatMap(content -> doDecode(response, responseType, content));
+                       .map(it -> new String(it, StandardCharsets.UTF_8)) //
+                       .doOnNext(it -> ClientLogger.logResponse(logId, response.statusCode(), it)) //
+                       .flatMap(content -> decoder.apply(response, responseType, content));
     }
+
 
     private static <T> Mono<T> doDecode(ClientResponse response, Class<T> responseType, String content) {
 
-        String mediaType = response.headers().contentType().map(MediaType::toString).orElse(XContentType.JSON.mediaType());
+        String mediaType = response
+            .headers()
+            .contentType()
+            .map(MediaType::toString)
+            .orElse(XContentType.JSON.mediaType());
 
         try {
 
             Method fromXContent = ReflectionUtils.findMethod(responseType, "fromXContent", XContentParser.class);
-
+            if (fromXContent == null) {
+                fromXContent = ReflectionUtils.findMethod(responseType, "fromXContext", XContentParser.class);
+            }
             return Mono.justOrEmpty(responseType
-                .cast(ReflectionUtils.invokeMethod(fromXContent, responseType, createParser(mediaType, content))));
+                                        .cast(ReflectionUtils.invokeMethod(fromXContent, responseType, createParser(mediaType, content))));
 
         } catch (Throwable errorParseFailure) { // cause elasticsearch also uses AssertionError
 
             try {
                 return Mono.error(BytesRestResponse.errorFromXContent(createParser(mediaType, content)));
             } catch (Exception e) {
-
                 return Mono
-                    .error(new ElasticsearchStatusException(content, RestStatus.fromCode(response.statusCode().value())));
+                    .error(new ElasticsearchStatusException(content,
+                                                            RestStatus.fromCode(response.statusCode().value()),
+                                                            errorParseFailure));
             }
         }
     }
 
     private static XContentParser createParser(String mediaType, String content) throws IOException {
+        XContentType type = XContentType.fromMediaTypeOrFormat(mediaType);
+        if (type == null) {
+            throw new IOException(content);
+        }
         return XContentType.fromMediaTypeOrFormat(mediaType) //
-            .xContent() //
-            .createParser(new NamedXContentRegistry(NamedXContents.getDefaultNamedXContents()),
-                DeprecationHandler.THROW_UNSUPPORTED_OPERATION, content);
+                           .xContent() //
+                           .createParser(new NamedXContentRegistry(NamedXContents.getDefaultNamedXContents()),
+                                         DeprecationHandler.THROW_UNSUPPORTED_OPERATION, content);
     }
 
     private <T> Publisher<? extends T> handleServerError(Request request, ClientResponse response) {
 
         int statusCode = response.statusCode().value();
         RestStatus status = RestStatus.fromCode(statusCode);
-        String mediaType = response.headers().contentType().map(MediaType::toString).orElse(XContentType.JSON.mediaType());
+        String mediaType = response
+            .headers()
+            .contentType()
+            .map(MediaType::toString)
+            .orElse(XContentType.JSON.mediaType());
 
-        return response.body(BodyExtractors.toMono(byte[].class)) //
+        return response
+            .body(BodyExtractors.toMono(byte[].class)) //
+            .switchIfEmpty(Mono.error(
+                () -> new ElasticsearchStatusException(String.format("%s request to %s returned error code %s and no body.",
+                                                                     request.getMethod(),
+                                                                     request.getEndpoint(),
+                                                                     statusCode),
+                                                       status)))
             .map(bytes -> new String(bytes, StandardCharsets.UTF_8)) //
             .flatMap(content -> contentOrError(content, mediaType, status))
             .flatMap(unused -> Mono
-                .error(new ElasticsearchStatusException(String.format("%s request to %s returned error code %s.",
-                    request.getMethod(), request.getEndpoint(), statusCode), status)));
+                .error(() -> new ElasticsearchStatusException(String.format("%s request to %s returned error code %s.",
+                                                                            request.getMethod(),
+                                                                            request.getEndpoint(),
+                                                                            statusCode),
+                                                              status)));
     }
 
     private <T> Publisher<? extends T> handleClientError(String logId, Request request, ClientResponse response,
@@ -843,13 +1008,17 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
 
         int statusCode = response.statusCode().value();
         RestStatus status = RestStatus.fromCode(statusCode);
-        String mediaType = response.headers().contentType().map(MediaType::toString).orElse(XContentType.JSON.mediaType());
+        String mediaType = response
+            .headers()
+            .contentType()
+            .map(MediaType::toString)
+            .orElse(XContentType.JSON.mediaType());
 
         return response.body(BodyExtractors.toMono(byte[].class)) //
-            .map(bytes -> new String(bytes, StandardCharsets.UTF_8)) //
-            .flatMap(content -> contentOrError(content, mediaType, status)) //
-            .doOnNext(content -> ClientLogger.logResponse(logId, response.statusCode(), content)) //
-            .flatMap(content -> doDecode(response, responseType, content));
+                       .map(bytes -> new String(bytes, StandardCharsets.UTF_8)) //
+                       .flatMap(content -> contentOrError(content, mediaType, status)) //
+                       .doOnNext(content -> ClientLogger.logResponse(logId, response.statusCode(), content)) //
+                       .flatMap(content -> doDecode(response, responseType, content));
     }
 
     // region ElasticsearchException helper
@@ -868,6 +1037,10 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         ElasticsearchException exception = getElasticsearchException(content, mediaType, status);
 
         if (exception != null) {
+            if (status == RestStatus.NOT_FOUND) {
+                log.warn(exception.getMessage(), exception);
+                return Mono.empty();
+            }
             StringBuilder sb = new StringBuilder();
             buildExceptionMessages(sb, exception);
             return Mono.error(new ElasticsearchStatusException(sb.toString(), status, exception));
@@ -916,27 +1089,51 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
 
     @Override
     public Mono<SearchResponse> searchForPage(SearchRequest request) {
-        long startTime = System.currentTimeMillis();
-        return sendRequest(request, requestCreator.search(), SearchResponse.class, HttpHeaders.EMPTY)
+        // if (version.after(Version.V_7_0_0)) {
+        request.source().trackTotalHits(true);
+        // }
+        return this
+            .sendRequest(request, this::buildSearchRequest, SearchResponse.class, HttpHeaders.EMPTY)
             .singleOrEmpty()
-            .doOnNext(res -> {
-                log.trace("execute search {} {}ms : {}", request.indices(), System.currentTimeMillis() - startTime, request.source());
-            })
-            .doOnError(err -> {
-                log.warn("execute search {} error : {}", request.indices(), request.source(), err);
-            });
+            .doOnSuccess(res -> log
+                .trace("execute search {} {} : {}", request.indices(), res.getTook(), request.source()))
+            .doOnError(err -> log.warn("execute search {} error : {}", request.indices(), request.source(), err));
     }
 
     @SneakyThrows
     protected Request convertMultiSearchRequest(MultiSearchRequest searchRequest) {
-        return RequestConverters.multiSearch(searchRequest);
+        Request request = RequestConverters.multiSearch(searchRequest);
+        if (log.isTraceEnabled()) {
+            log.trace("execute elasticsearch multi search: {}", requestBodyToString(request));
+        }
+        return request;
     }
 
     @Override
     @SneakyThrows
     public Mono<MultiSearchResponse> multiSearch(MultiSearchRequest request) {
-
-        return sendRequest(request, this::convertMultiSearchRequest, MultiSearchResponse.class, HttpHeaders.EMPTY)
+        Function3<ClientResponse, Class<MultiSearchResponse>, String, Mono<MultiSearchResponse>> decoder;
+        if (version.before(Version.V_7_0_0)) {
+            //适配6.x响应格式
+            decoder = (clientResponse, multiSearchResponseClass, s) -> {
+                JSONObject data = JSON.parseObject(s);
+                int took = data.getJSONArray("responses")
+                               .stream()
+                               .map(JSONObject.class::cast)
+                               .map(json -> json.getIntValue("took"))
+                               .reduce(Math::addExact)
+                               .orElse(0);
+                data.put("took", took);
+                return DefaultReactiveElasticsearchClient.doDecode(clientResponse, multiSearchResponseClass, data.toJSONString());
+            };
+        } else {
+            decoder = DefaultReactiveElasticsearchClient::doDecode;
+        }
+        return sendRequest(request,
+                           this::convertMultiSearchRequest,
+                           MultiSearchResponse.class,
+                           HttpHeaders.EMPTY,
+                           decoder)
             .singleOrEmpty();
     }
 
@@ -961,8 +1158,75 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
             .singleOrEmpty();
     }
 
+    @Override
+    public Mono<GetMappingsResponse> getMapping(HttpHeaders headers, GetMappingsRequest getMappingsRequest) {
+        return sendRequest(getMappingsRequest, requestCreator.getMapping(),
+                           GetMappingsResponse.class, headers).next();
+    }
+
+    @Override
+    public Mono<org.elasticsearch.client.indices.GetMappingsResponse> getMapping(HttpHeaders headers, org.elasticsearch.client.indices.GetMappingsRequest getMappingsRequest) {
+        return sendRequest(getMappingsRequest, requestCreator.getMappingRequest(), org.elasticsearch.client.indices.GetMappingsResponse.class, headers) //
+                                                                                                                                                        .next();
+    }
+
+    @Override
+    public Mono<GetFieldMappingsResponse> getFieldMapping(HttpHeaders headers,
+                                                          GetFieldMappingsRequest getFieldMappingsRequest) {
+        return sendRequest(getFieldMappingsRequest, requestCreator.getFieldMapping(), GetFieldMappingsResponse.class,
+                           headers).next();
+    }
+
+    @Override
+    public Mono<Boolean> updateAliases(HttpHeaders headers, IndicesAliasesRequest indicesAliasesRequest) {
+        return sendRequest(indicesAliasesRequest, requestCreator.updateAlias(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged).next();
+    }
+
+    @Override
+    public Mono<GetAliasesResponse> getAliases(HttpHeaders headers, GetAliasesRequest getAliasesRequest) {
+        return sendRequest(getAliasesRequest, requestCreator.getAlias(), GetAliasesResponse.class, headers).next();
+    }
+
+    @Override
+    public Mono<Boolean> putTemplate(HttpHeaders headers, org.elasticsearch.client.indices.PutIndexTemplateRequest putIndexTemplateRequest) {
+        return sendRequest(putIndexTemplateRequest, requestCreator.putTemplate(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged).next();
+    }
+
+    @Override
+    public Mono<org.elasticsearch.client.indices.GetIndexTemplatesResponse> getTemplate(HttpHeaders headers,
+                                                                                        org.elasticsearch.client.indices.GetIndexTemplatesRequest getIndexTemplatesRequest) {
+        return (sendRequest(getIndexTemplatesRequest, requestCreator.getTemplates(), org.elasticsearch.client.indices.GetIndexTemplatesResponse.class,
+                            headers)).next();
+    }
+
+    @Override
+    public Mono<Boolean> existsTemplate(HttpHeaders headers, IndexTemplatesExistRequest indexTemplatesExistRequest) {
+        return sendRequest(indexTemplatesExistRequest, requestCreator.templatesExist(),
+                           RawActionResponse.class, headers)
+            .flatMap(response -> response
+                .releaseBody()
+                .thenReturn(response.statusCode().is2xxSuccessful()))
+            .next();
+    }
+
+    @Override
+    public Mono<Boolean> deleteTemplate(HttpHeaders headers, DeleteIndexTemplateRequest deleteIndexTemplateRequest) {
+        return sendRequest(deleteIndexTemplateRequest, requestCreator.deleteTemplate(), AcknowledgedResponse.class, headers)
+            .map(AcknowledgedResponse::isAcknowledged).next();
+    }
+
+    @Override
+    public Mono<GetIndexResponse> getIndex(HttpHeaders headers, org.elasticsearch.client.indices.GetIndexRequest getIndexRequest) {
+        return sendRequest(getIndexRequest, requestCreator.getIndex(), GetIndexResponse.class, headers).next();
+    }
+
     Request convertGetIndexTemplateRequest(GetIndexTemplatesRequest getIndexTemplatesRequest) {
-        return new Request(HttpGet.METHOD_NAME, "/_template/" + String.join(",", getIndexTemplatesRequest.names()));
+        Request request = new Request(HttpGet.METHOD_NAME, "/_template/" + String.join(",", getIndexTemplatesRequest.names()));
+        Params params = new Params(request);
+        params.putParam("include_type_name", "true");
+        return request;
     }
 
     @Override
@@ -1001,16 +1265,23 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         return version;
     }
 
+    @Override
+    public Mono<ClusterHealthResponse> health(HttpHeaders headers, ClusterHealthRequest clusterHealthRequest) {
+        return sendRequest(clusterHealthRequest, requestCreator.clusterHealth(), ClusterHealthResponse.class, headers)
+            .next();
+    }
+
     // endregion
 
     // region internal classes
 
     /**
-     * Reactive client {@link ReactiveElasticsearchClient.Status} implementation.
+     * Reactive client {@link Status} implementation.
      *
      * @author Christoph Strobl
      */
-    class ClientStatus implements ReactiveElasticsearchClient.Status {
+    @Generated
+    static class ClientStatus implements Status {
 
         private final Collection<ElasticsearchHost> connectedHosts;
 
@@ -1028,6 +1299,7 @@ public class DefaultReactiveElasticsearchClient implements ReactiveElasticsearch
         }
     }
 
+    @Generated
     static class Params {
         private final Request request;
 

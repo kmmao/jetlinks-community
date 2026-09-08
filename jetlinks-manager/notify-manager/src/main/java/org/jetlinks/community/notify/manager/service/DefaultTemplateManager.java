@@ -6,8 +6,8 @@ import org.jetlinks.community.notify.manager.entity.NotifyTemplateEntity;
 import org.jetlinks.community.notify.template.AbstractTemplateManager;
 import org.jetlinks.community.notify.template.TemplateProperties;
 import org.jetlinks.community.notify.template.TemplateProvider;
+import org.jetlinks.core.event.EventBus;
 import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
@@ -16,8 +16,12 @@ import reactor.core.publisher.Mono;
 @Slf4j
 public class DefaultTemplateManager extends AbstractTemplateManager implements BeanPostProcessor {
 
-    @Autowired
-    private NotifyTemplateService templateService;
+    private final NotifyTemplateService templateService;
+
+    public DefaultTemplateManager(EventBus eventBus, NotifyTemplateService templateService) {
+        super(eventBus);
+        this.templateService = templateService;
+    }
 
     @Override
     protected Mono<TemplateProperties> getProperties(NotifyType type, String id) {

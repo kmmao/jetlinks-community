@@ -5,7 +5,8 @@
     <parent>
         <artifactId>notify-component</artifactId>
         <groupId>org.jetlinks.community</groupId>
-        <version>1.11.0-SNAPSHOT</version>
+        <version>2.3.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -41,7 +42,12 @@
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
-            <version>1.11.3</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetlinks.community</groupId>
+            <artifactId>io-component</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
     </dependencies>

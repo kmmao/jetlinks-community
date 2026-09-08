@@ -7,6 +7,7 @@ import org.hswebframework.web.id.IDGenerator;
 import org.jetlinks.community.notify.manager.subscriber.Notify;
 
 import java.io.Serializable;
+import java.util.List;
 
 @Getter
 @Setter
@@ -27,9 +28,16 @@ public class Notification implements Serializable {
 
     private String message;
 
+
+    private Object detail;
+
+    private String code;
+
     private String dataId;
 
     private long notifyTime;
+
+    private List<String> notifyChannels;
 
     public static Notification from(NotifySubscriberEntity entity) {
         Notification notification = new Notification();
@@ -39,16 +47,19 @@ public class Notification implements Serializable {
         notification.subscriber = entity.getSubscriber();
         notification.topicName = entity.getTopicName();
         notification.setTopicProvider(entity.getTopicProvider());
+        notification.setNotifyChannels(entity.getNotifyChannels());
 
         return notification;
     }
 
     public Notification copyWithMessage(Notify message) {
         Notification target = FastBeanCopier.copy(this, new Notification());
-        target.setId(IDGenerator.SNOW_FLAKE_STRING.generate());
+        target.setId(IDGenerator.RANDOM.generate());
         target.setMessage(message.getMessage());
         target.setDataId(message.getDataId());
         target.setNotifyTime(message.getNotifyTime());
+        target.setDetail(message.getDetail());
+        target.setCode(message.getCode());
 
         return target;
     }

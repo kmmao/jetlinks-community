@@ -1,12 +1,18 @@
 package org.jetlinks.community.device.service;
 
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.jetlinks.core.device.*;
 import org.jetlinks.community.device.entity.DeviceInstanceEntity;
 import org.jetlinks.community.device.entity.DeviceProductEntity;
-import org.jetlinks.core.device.*;
+import org.jetlinks.community.device.enums.DeviceState;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 
+/**
+ * 自动发现设备的注册中心,当默认注册中心没有获取到设备信息时，尝试查询数据库来获取设备信息。
+ *
+ * @author zhouhao
+ */
 public class AutoDiscoverDeviceRegistry implements DeviceRegistry {
 
     private final DeviceRegistry parent;
@@ -32,6 +38,7 @@ public class AutoDiscoverDeviceRegistry implements DeviceRegistry {
             .getDevice(deviceId)
             .switchIfEmpty(Mono.defer(() -> deviceRepository
                 .findById(deviceId)
+                .filter(instance -> instance.getState() != DeviceState.notActive)
                 .flatMap(instance -> parent.register(instance.toDeviceInfo())))
             )
         );
@@ -46,6 +53,7 @@ public class AutoDiscoverDeviceRegistry implements DeviceRegistry {
             .getProduct(productId)
             .switchIfEmpty(Mono.defer(() -> productRepository
                 .findById(productId)
+                .filter(product -> product.getState() == 1)
                 .flatMap(product -> parent.register(product.toProductInfo()))));
     }
 
@@ -67,5 +75,15 @@ public class AutoDiscoverDeviceRegistry implements DeviceRegistry {
     @Override
     public Mono<Void> unregisterProduct(String productId) {
         return parent.unregisterProduct(productId);
+    }
+
+    @Override
+    public Mono<Void> unregisterProduct(String productId, String version) {
+        return parent.unregisterProduct(productId, version);
+    }
+
+    @Override
+    public Mono<DeviceProductOperator> getProduct(String productId, String version) {
+        return parent.getProduct(productId, version);
     }
 }

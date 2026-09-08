@@ -1,7 +1,11 @@
 package org.jetlinks.community.rule.engine.configuration;
 
 import lombok.extern.slf4j.Slf4j;
+import org.jetlinks.community.rule.engine.commons.TermsConditionEvaluator;
+import org.jetlinks.community.rule.engine.executor.DeviceSelectorBuilder;
+import org.jetlinks.community.rule.engine.executor.device.DeviceDataTaskExecutorProvider;
 import org.jetlinks.core.event.EventBus;
+import org.jetlinks.core.things.ThingsDataManager;
 import org.jetlinks.rule.engine.api.RuleEngine;
 import org.jetlinks.rule.engine.api.scheduler.Scheduler;
 import org.jetlinks.rule.engine.api.task.ConditionEvaluator;
@@ -35,6 +39,11 @@ public class RuleEngineConfiguration {
     @Bean
     public DefaultConditionEvaluator defaultConditionEvaluator() {
         return new DefaultConditionEvaluator();
+    }
+
+    @Bean
+    public TermsConditionEvaluator termsConditionEvaluator(){
+        return new TermsConditionEvaluator();
     }
 
     @Bean
@@ -96,6 +105,12 @@ public class RuleEngineConfiguration {
     @Bean
     public RuleEngine defaultRuleEngine(Scheduler scheduler) {
         return new DefaultRuleEngine(scheduler);
+    }
+
+    @Bean
+    public DeviceDataTaskExecutorProvider deviceDataTaskExecutorProvider(ThingsDataManager dataManager,
+                                                                         DeviceSelectorBuilder selectorBuilder) {
+        return new DeviceDataTaskExecutorProvider(dataManager, selectorBuilder);
     }
 
 }

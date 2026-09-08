@@ -12,18 +12,24 @@ import org.hswebframework.web.api.crud.entity.QueryParamEntity;
 import org.hswebframework.web.authorization.Authentication;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.exception.UnAuthorizedException;
+import org.hswebframework.web.i18n.LocaleUtils;
+import org.jetlinks.community.notify.manager.subscriber.SubscriberProvider;
+import org.jetlinks.community.notify.manager.subscriber.SubscriberProviders;
+import org.jetlinks.core.metadata.ConfigMetadata;
+import org.jetlinks.community.notify.manager.configuration.NotifySubscriberProperties;
 import org.jetlinks.community.notify.manager.entity.NotificationEntity;
 import org.jetlinks.community.notify.manager.entity.NotifySubscriberEntity;
 import org.jetlinks.community.notify.manager.enums.NotificationState;
 import org.jetlinks.community.notify.manager.enums.SubscribeState;
 import org.jetlinks.community.notify.manager.service.NotificationService;
+import org.jetlinks.community.notify.manager.service.NotifySubscriberProviderService;
 import org.jetlinks.community.notify.manager.service.NotifySubscriberService;
-import org.jetlinks.community.notify.manager.subscriber.SubscriberProvider;
-import org.jetlinks.core.metadata.ConfigMetadata;
+import org.jetlinks.community.notify.subscription.SubscribeType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.Comparator;
 import java.util.List;
 
 @RestController
@@ -35,14 +41,18 @@ public class NotificationController {
 
     private final NotifySubscriberService subscriberService;
 
-    private final List<SubscriberProvider> providers;
+    private final NotifySubscriberProviderService providerService;
+
+    private final NotifySubscriberProperties properties;
 
     public NotificationController(NotificationService notificationService,
                                   NotifySubscriberService subscriberService,
-                                  List<SubscriberProvider> providers) {
+                                  NotifySubscriberProviderService providerService,
+                                  NotifySubscriberProperties properties) {
         this.notificationService = notificationService;
         this.subscriberService = subscriberService;
-        this.providers = providers;
+        this.providerService = providerService;
+        this.properties = properties;
     }
 
     @GetMapping("/subscriptions/_query")
@@ -52,11 +62,19 @@ public class NotificationController {
         return Authentication
             .currentReactive()
             .switchIfEmpty(Mono.error(UnAuthorizedException::new))
-            .flatMap(auth -> query.toNestQuery(q -> q
-                .where(NotifySubscriberEntity::getSubscriberType, "user")
-                .and(NotifySubscriberEntity::getSubscriber, auth.getUser().getId()))
+            .flatMap(auth -> query
+                .toNestQuery(q -> q
+                    .where(NotifySubscriberEntity::getSubscriberType, "user")
+                    .and(NotifySubscriberEntity::getSubscriber, auth.getUser().getId()))
                 .execute(subscriberService::queryPager));
 
+    }
+
+    @PostMapping("/subscriptions/_query")
+    @Authorize(ignore = true)
+    @Operation(summary = "POST查询当前用户订阅信息")
+    public Mono<PagerResult<NotifySubscriberEntity>> querySubscription(@RequestBody Mono<QueryParamEntity> query) {
+        return query.flatMap(this::querySubscription);
     }
 
     @PutMapping("/subscription/{id}/_{state}")
@@ -97,11 +115,11 @@ public class NotificationController {
     @PatchMapping("/subscribe")
     @Authorize(ignore = true)
     @Operation(summary = "订阅通知")
-    public Mono<NotifySubscriberEntity> doSubscribe(@RequestBody Mono<NotifySubscriberEntity> subscribe) {
+    public Flux<NotifySubscriberEntity> doSubscribe(@RequestBody Flux<NotifySubscriberEntity> subscribe) {
         return Authentication
             .currentReactive()
             .switchIfEmpty(Mono.error(UnAuthorizedException::new))
-            .flatMap(auth -> subscribe
+            .flatMapMany(auth -> subscribe
                 .doOnNext(e -> {
                     e.setSubscriberType("user");
                     e.setSubscriber(auth.getUser().getId());
@@ -111,13 +129,64 @@ public class NotificationController {
                     .thenReturn(e)));
     }
 
+    /**
+     * @see NotifyChannelController#getChannelProviders()
+     * @deprecated
+     */
     @GetMapping("/providers")
     @Authorize(merge = false)
     @Operation(summary = "获取全部订阅支持")
     public Flux<SubscriberProviderInfo> getProviders() {
         return Flux
-            .fromIterable(providers)
+            .fromIterable(SubscriberProviders.getProviders())
             .map(SubscriberProviderInfo::of);
+    }
+
+    /**
+     * @see NotifyChannelController#getChannelProviders()
+     * @deprecated
+     */
+    @GetMapping("/current/providers")
+    @Authorize(merge = false)
+    @Operation(summary = "获取当前用户可用的订阅支持")
+    public Flux<SubscriberProviderInfo> getCurrentProviders() {
+        return Authentication
+            .currentReactive()
+            .switchIfEmpty(Mono.error(UnAuthorizedException::new))
+            .flatMapMany(auth -> providerService
+                .channels()
+                .mapNotNull(info -> info.copyToProvidedUser(auth, properties)))
+            .filter(p -> CollectionUtils.isNotEmpty(p.getChannels()))
+            .map(NotifyChannelController.SubscriberProviderInfo::getProvider)
+            .collectList()
+            .flatMapMany(providers -> Flux
+                .fromIterable(SubscriberProviders.getProviders())
+                .filter(provider -> providers.contains(provider.getId()))
+                .map(SubscriberProviderInfo::of));
+    }
+
+    /**
+     * @see NotifyChannelController#getChannelProviders()
+     * @deprecated
+     */
+    @GetMapping("/current/{type}/providers")
+    @Authorize(merge = false)
+    @Operation(summary = "根据订阅类型获取当前用户可用的订阅支持")
+    public Flux<SubscriberProviderInfo> getCurrentProviders(@PathVariable String type) {
+        return Authentication
+            .currentReactive()
+            .switchIfEmpty(Mono.error(UnAuthorizedException::new))
+            .flatMapMany(auth -> providerService
+                .channels()
+                .mapNotNull(info -> info.copyToProvidedUser(auth, properties)))
+            .filter(p -> CollectionUtils.isNotEmpty(p.getChannels()))
+            .map(NotifyChannelController.SubscriberProviderInfo::getProvider)
+            .collectList()
+            .flatMapMany(providers -> Flux
+                .fromIterable(SubscriberProviders.getProviders())
+                .filter(provider -> provider.getType().getId().equals(type) && providers.contains(provider.getId()))
+                .sort(Comparator.comparing(SubscriberProvider::getOrder))
+                .map(SubscriberProviderInfo::of));
     }
 
     @GetMapping("/_query")
@@ -127,12 +196,20 @@ public class NotificationController {
         return Authentication
             .currentReactive()
             .switchIfEmpty(Mono.error(UnAuthorizedException::new))
-            .flatMap(auth -> query.toNestQuery(q -> q
-                .where(NotificationEntity::getSubscriberType, "user")
-                .and(NotificationEntity::getSubscriber, auth.getUser().getId()))
+            .flatMap(auth -> query
+                .toNestQuery(q -> q
+                    .where(NotificationEntity::getSubscriberType, "user")
+                    .and(NotificationEntity::getSubscriber, auth.getUser().getId()))
                 .execute(notificationService::queryPager)
                 .defaultIfEmpty(PagerResult.empty()));
 
+    }
+
+    @PostMapping("/_query")
+    @Authorize(ignore = true)
+    @Operation(summary = "使用POST方式查询通知记录")
+    public Mono<PagerResult<NotificationEntity>> queryMyNotifications(@RequestBody Mono<QueryParamEntity> query) {
+        return query.flatMap(this::queryMyNotifications);
     }
 
     @GetMapping("/{id}/read")
@@ -142,7 +219,8 @@ public class NotificationController {
         return Authentication
             .currentReactive()
             .switchIfEmpty(Mono.error(UnAuthorizedException::new))
-            .flatMap(auth -> QueryParamEntity.newQuery()
+            .flatMap(auth -> QueryParamEntity
+                .newQuery()
                 .where(NotificationEntity::getSubscriberType, "user")
                 .and(NotificationEntity::getSubscriber, auth.getUser().getId())
                 .and(NotificationEntity::getId, id)
@@ -161,11 +239,32 @@ public class NotificationController {
             .switchIfEmpty(Mono.error(UnAuthorizedException::new))
             .flatMap(auth -> idList
                 .filter(CollectionUtils::isNotEmpty)
-                .flatMap(list-> notificationService.createUpdate()
-                    .set(NotificationEntity::getState,state)
+                .flatMap(list -> notificationService
+                    .createUpdate()
+                    .set(NotificationEntity::getState, state)
                     .where(NotificationEntity::getSubscriberType, "user")
                     .and(NotificationEntity::getSubscriber, auth.getUser().getId())
                     .in(NotificationEntity::getId, list)
+                    .execute())
+            );
+    }
+
+    @PostMapping("/_{state}/provider")
+    @Authorize(ignore = true)
+    @QueryOperation(summary = "按订阅具体类型修改通知状态")
+    public Mono<Integer> readNotificationByType(@RequestBody Mono<List<String>> providerList,
+                                                @PathVariable NotificationState state) {
+        return Authentication
+            .currentReactive()
+            .switchIfEmpty(Mono.error(UnAuthorizedException::new))
+            .flatMap(auth -> providerList
+                .filter(CollectionUtils::isNotEmpty)
+                .flatMap(list -> notificationService
+                    .createUpdate()
+                    .set(NotificationEntity::getState, state)
+                    .where(NotificationEntity::getSubscriberType, "user")
+                    .and(NotificationEntity::getSubscriber, auth.getUser().getId())
+                    .in(NotificationEntity::getTopicProvider, list)
                     .execute())
             );
     }
@@ -177,13 +276,36 @@ public class NotificationController {
 
         private String name;
 
+        private SubscribeTypeInfo type;
+
         private ConfigMetadata metadata;
+
+        public String getName() {
+            return LocaleUtils.resolveMessage("message.subscriber.provider." + id, name);
+        }
 
         public static SubscriberProviderInfo of(SubscriberProvider provider) {
             SubscriberProviderInfo info = new SubscriberProviderInfo();
             info.id = provider.getId();
             info.name = provider.getName();
+            info.type = SubscribeTypeInfo.of(provider.getType());
             info.setMetadata(provider.getConfigMetadata());
+            return info;
+        }
+    }
+
+    @Getter
+    @Setter
+    public static class SubscribeTypeInfo {
+
+        private String id;
+
+        private String name;
+
+        public static SubscribeTypeInfo of(SubscribeType type) {
+            SubscribeTypeInfo info = new SubscribeTypeInfo();
+            info.id = type.getId();
+            info.name = type.getName();
             return info;
         }
     }

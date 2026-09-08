@@ -1,14 +1,11 @@
 package org.jetlinks.community.device.measurements.message;
 
-import org.jetlinks.community.Interval;
+import lombok.Generated;
 import org.jetlinks.community.dashboard.*;
 import org.jetlinks.community.dashboard.supports.StaticMeasurement;
 import org.jetlinks.community.device.timeseries.DeviceTimeSeriesMetric;
 import org.jetlinks.community.timeseries.TimeSeriesManager;
-import org.jetlinks.community.timeseries.TimeSeriesMetric;
 import org.jetlinks.community.timeseries.query.AggregationQueryParam;
-import org.jetlinks.core.device.DeviceProductOperator;
-import org.jetlinks.core.device.DeviceRegistry;
 import org.jetlinks.core.event.EventBus;
 import org.jetlinks.core.event.Subscription;
 import org.jetlinks.core.event.TopicPayload;
@@ -19,28 +16,68 @@ import org.jetlinks.core.metadata.types.DateTimeType;
 import org.jetlinks.core.metadata.types.IntType;
 import org.jetlinks.core.metadata.types.StringType;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
-import java.util.List;
 
+/**
+ * 设备消息监控支持
+ *
+ * <pre>{@code
+ * POST /dashboard/_multi
+ *
+ * [
+ *     {
+ *         "dashboard": "device",
+ *         "object": "message",
+ *         "measurement": "quantity",
+ *         "dimension": "agg",
+ *         "group": "device_msg",
+ *         "params": {
+ *              "format":"yyyy-MM-dd HH:mm",
+ *              "time":"10m",
+ *              "from":"now-2h",
+ *              "to":"now",
+ *              "limit":2
+ *         }
+ *     }
+ * ]
+ *
+ * [{
+ * 	"group": "device_msg",
+ * 	"data": {
+ * 		"value": 297,
+ * 		"timeString": "2022-05-30 14:20",
+ * 		"timestamp": 0
+ *      }
+ * }, {
+ * 	"group": "device_msg",
+ * 	"data": {
+ * 		"value": 657,
+ * 		"timeString": "2022-05-30 14:10",
+ * 		"timestamp": 1
+ *    }
+ * }]
+ *
+ *
+ * }</pre>
+ *
+ * @author zhouhao
+ * @since 1.0
+ */
 class DeviceMessageMeasurement extends StaticMeasurement {
 
     private final EventBus eventBus;
 
     private final TimeSeriesManager timeSeriesManager;
 
-    private final DeviceRegistry deviceRegistry;
     static MeasurementDefinition definition = MeasurementDefinition.of("quantity", "设备消息量");
 
     public DeviceMessageMeasurement(EventBus eventBus,
-                                    DeviceRegistry registry,
                                     TimeSeriesManager timeSeriesManager) {
         super(definition);
-        this.deviceRegistry = registry;
         this.eventBus = eventBus;
         this.timeSeriesManager = timeSeriesManager;
         addDimension(new RealTimeMessageDimension());
@@ -53,21 +90,25 @@ class DeviceMessageMeasurement extends StaticMeasurement {
     class RealTimeMessageDimension implements MeasurementDimension {
 
         @Override
+        @Generated
         public DimensionDefinition getDefinition() {
             return CommonDimensionDefinition.realTime;
         }
 
         @Override
+        @Generated
         public DataType getValueType() {
             return IntType.GLOBAL;
         }
 
         @Override
+        @Generated
         public ConfigMetadata getParams() {
             return realTimeConfigMetadata;
         }
 
         @Override
+        @Generated
         public boolean isRealTime() {
             return true;
         }
@@ -86,7 +127,6 @@ class DeviceMessageMeasurement extends StaticMeasurement {
         }
     }
 
-
     static ConfigMetadata historyConfigMetadata = new DefaultConfigMetadata()
         .add("productId", "设备型号", "", new StringType())
         .add("time", "周期", "例如: 1h,10m,30s", new StringType())
@@ -100,78 +140,63 @@ class DeviceMessageMeasurement extends StaticMeasurement {
 
 
         @Override
+        @Generated
         public DimensionDefinition getDefinition() {
             return CommonDimensionDefinition.agg;
         }
 
         @Override
+        @Generated
         public DataType getValueType() {
             return IntType.GLOBAL;
         }
 
         @Override
+        @Generated
         public ConfigMetadata getParams() {
             return historyConfigMetadata;
         }
 
         @Override
+        @Generated
         public boolean isRealTime() {
             return false;
         }
 
-        private AggregationQueryParam createQueryParam(MeasurementParameter parameter) {
-            return AggregationQueryParam.of()
-//                .sum("count")
-                .groupBy(
-                    parameter.getInterval("time").orElse(Interval.ofHours(1)),
-                    parameter.getString("format").orElse("MM月dd日 HH时"))
-//                .filter(query ->
-//                    query
-//                        .where("name", "message-count")
-//                        .is("productId", parameter.getString("productId").orElse(null))
-//                        .is("msgType", parameter.getString("msgType").orElse(null))
-//                )
+        public AggregationQueryParam createQueryParam(MeasurementParameter parameter) {
+            return AggregationQueryParam
+                .of()
+                .sum("count")
+                .groupBy(parameter.getInterval("interval", parameter.getInterval("time", null)),
+                         parameter.getString("format").orElse("MM月dd日 HH时"))
+                .filter(query -> query
+                    .where("name", "message-count")
+                    .is("productId", parameter.getString("productId").orElse(null))
+                )
                 .limit(parameter.getInt("limit").orElse(1))
-                .from(parameter.getDate("from").orElseGet(() -> Date.from(LocalDateTime.now().plusDays(-1).atZone(ZoneId.systemDefault()).toInstant())))
+                .from(parameter
+                          .getDate("from")
+                          .orElseGet(() -> Date
+                              .from(LocalDateTime
+                                        .now()
+                                        .plusDays(-1)
+                                        .atZone(ZoneId.systemDefault())
+                                        .toInstant())))
                 .to(parameter.getDate("to").orElse(new Date()));
-        }
-
-        private Mono<TimeSeriesMetric[]> getProductMetrics(List<String> productIdList) {
-            return Flux
-                .fromIterable(productIdList)
-                .flatMap(id -> deviceRegistry
-                    .getProduct(id)
-                    .flatMap(DeviceProductOperator::getMetadata)
-                    .onErrorResume(err -> Mono.empty())
-                    .flatMapMany(metadata -> Flux.fromIterable(metadata.getEvents())
-                        .map(event -> DeviceTimeSeriesMetric.deviceEventMetric(id, event.getId())))
-                    .concatWithValues(DeviceTimeSeriesMetric.devicePropertyMetric(id)))
-                .collectList()
-                .map(list -> list.toArray(new TimeSeriesMetric[0]));
         }
 
         @Override
         public Flux<SimpleMeasurementValue> getValue(MeasurementParameter parameter) {
+            AggregationQueryParam param = createQueryParam(parameter);
 
-             return AggregationQueryParam.of()
-                .sum("count")
-                .groupBy(
-                    parameter.getInterval("time").orElse(Interval.ofHours(1)),
-                    parameter.getString("format").orElse("MM月dd日 HH时"))
-                .filter(query ->
-                    query.where("name", "message-count")
-                        .is("productId", parameter.getString("productId").orElse(null))
-                        .is("msgType", parameter.getString("msgType").orElse(null))
-                )
-                .limit(parameter.getInt("limit").orElse(1))
-                .from(parameter.getDate("from").orElseGet(() -> Date.from(LocalDateTime.now().plusDays(-1).atZone(ZoneId.systemDefault()).toInstant())))
-                .to(parameter.getDate("to").orElse(new Date()))
+            return Flux.defer(() -> param
                 .execute(timeSeriesManager.getService(DeviceTimeSeriesMetric.deviceMetrics())::aggregation)
                 .index((index, data) -> SimpleMeasurementValue.of(
-                    data.getInt("count").orElse(0),
+                    data.getLong("count",0),
                     data.getString("time").orElse(""),
-                    index))
-                .sort();
+                    index)))
+                .take(param.getLimit());
+
         }
     }
 

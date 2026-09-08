@@ -1,20 +1,27 @@
 package org.jetlinks.community.device.message;
 
 import lombok.extern.slf4j.Slf4j;
+import org.hswebframework.web.id.IDGenerator;
 import org.jetlinks.community.PropertyConstants;
 import org.jetlinks.core.Values;
 import org.jetlinks.core.device.DeviceOperator;
 import org.jetlinks.core.device.DeviceRegistry;
+import org.jetlinks.core.device.session.DeviceSessionEvent;
+import org.jetlinks.core.device.session.DeviceSessionManager;
 import org.jetlinks.core.event.EventBus;
 import org.jetlinks.core.message.*;
+import org.jetlinks.core.message.collector.ReportCollectorDataMessage;
 import org.jetlinks.core.message.event.EventMessage;
 import org.jetlinks.core.server.MessageHandler;
-import org.jetlinks.core.server.session.DeviceSessionManager;
+import org.jetlinks.core.server.session.ChildrenDeviceSession;
+import org.jetlinks.core.server.session.DeviceSession;
 import org.jetlinks.supports.server.DecodedClientMessageHandler;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import javax.annotation.Nonnull;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -32,11 +39,15 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
 
     //将设备注册中心的配置追加到消息header中,下游订阅者可直接使用.
     private final static String[] allConfigHeader = {
-        PropertyConstants.productId.getKey(),
-        PropertyConstants.deviceName.getKey(),
-        PropertyConstants.orgId.getKey()
+            PropertyConstants.productId.getKey(),
+            PropertyConstants.productName.getKey(),
+            PropertyConstants.deviceName.getKey(),
+            PropertyConstants.orgId.getKey()
     };
-    private final static BiConsumer<Throwable, Object> doOnError = (error, val) -> DeviceMessageConnector.log.error(error.getMessage(), error);
+    private final static Function<Throwable, Mono<Void>> doOnError = (error) -> {
+        DeviceMessageConnector.log.error(error.getMessage(), error);
+        return Mono.empty();
+    };
     private final static Function<DeviceOperator, Mono<Values>> configGetter = operator -> operator.getSelfConfigs(allConfigHeader);
     private final static Values emptyValues = Values.of(Collections.emptyMap());
     private static final BiConsumer<Message, StringBuilder>[] fastTopicBuilder;
@@ -102,7 +113,7 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
             Message msg = ((ChildDeviceMessage) message).getChildDeviceMessage();
             if (msg instanceof DeviceMessage) {
                 builder.append("/message/children/")
-                    .append(((DeviceMessage) msg).getDeviceId());
+                       .append(((DeviceMessage) msg).getDeviceId());
             } else {
                 builder.append("/message/children");
             }
@@ -113,7 +124,7 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
             Message msg = ((ChildDeviceMessageReply) message).getChildDeviceMessage();
             if (msg instanceof DeviceMessage) {
                 builder.append("/message/children/reply/")
-                    .append(((DeviceMessage) msg).getDeviceId());
+                       .append(((DeviceMessage) msg).getDeviceId());
             } else {
                 builder.append("/message/children/reply");
             }
@@ -121,6 +132,26 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
         });
         //上报了新的物模型
         createFastBuilder(MessageType.DERIVED_METADATA, "/metadata/derived");
+        //状态检查
+        createFastBuilder(MessageType.STATE_CHECK, "/message/state_check");
+        createFastBuilder(MessageType.STATE_CHECK_REPLY, "/message/state_check_reply");
+
+        //数采相关消息 since 2.2
+        createFastBuilder(MessageType.REPORT_COLLECTOR, ((message, stringBuilder) -> {
+            String addr = message.getHeaderOrElse(ReportCollectorDataMessage.ADDRESS, null);
+            stringBuilder.append("/message/collector/report");
+            if (StringUtils.hasText(addr)) {
+                if (!addr.startsWith("/")) {
+                    stringBuilder.append('/');
+                }
+                stringBuilder.append(addr);
+            }
+        }));
+        createFastBuilder(MessageType.READ_COLLECTOR_DATA, "/message/collector/read");
+        createFastBuilder(MessageType.READ_COLLECTOR_DATA_REPLY, "/message/collector/read/reply");
+        createFastBuilder(MessageType.WRITE_COLLECTOR_DATA, "/message/collector/write");
+        createFastBuilder(MessageType.WRITE_COLLECTOR_DATA_REPLY, "/message/collector/write/reply");
+
     }
 
     private final DeviceRegistry registry;
@@ -134,27 +165,50 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
         this.registry = registry;
         this.eventBus = eventBus;
         this.messageHandler = messageHandler;
-        sessionManager
-            .onRegister()
-            .flatMap(session -> {
-                DeviceOnlineMessage message = new DeviceOnlineMessage();
-                message.setDeviceId(session.getDeviceId());
-                message.setTimestamp(session.connectTime());
-                return onMessage(message);
-            })
-            .onErrorContinue(doOnError)
-            .subscribe();
+        sessionManager.listenEvent(event -> {
+            if (event.isClusterExists()) {
+                return Mono.empty();
+            }
+            //从会话管理器里监听会话注销,转发为设备离线消息
+            if (event.getType() == DeviceSessionEvent.Type.unregister) {
+                return handleSessionMessage(new DeviceOfflineMessage().timestamp(event.getTimestamp()),event.getSession());
+            }
+            //从会话管理器里监听会话注册,转发为设备上线消息
+            if (event.getType() == DeviceSessionEvent.Type.register) {
+                return handleSessionMessage(new DeviceOnlineMessage().timestamp(event.getSession().connectTime()),event.getSession());
+            }
+            return Mono.empty();
+        });
+    }
 
-        sessionManager
-            .onUnRegister()
-            .flatMap(session -> {
-                DeviceOfflineMessage message = new DeviceOfflineMessage();
-                message.setDeviceId(session.getDeviceId());
-                message.setTimestamp(System.currentTimeMillis());
-                return onMessage(message);
-            })
-            .onErrorContinue(doOnError)
-            .subscribe();
+    private Mono<Void> handleSessionMessage(CommonDeviceMessage<?> message, DeviceSession session) {
+        return Mono.deferContextual(ctx -> {
+
+            //填充触发会话的header信息
+            ctx.<DeviceMessage>getOrEmpty(DeviceMessage.class)
+               .ifPresent(msg -> {
+                   if (msg.getHeaders() != null) {
+                       msg.getHeaders().forEach(message::addHeaderIfAbsent);
+                   }
+                   //上线离线由何种消息触发
+                   message.addHeader("_createBy", msg.getMessageType().name());
+               });
+
+            message.setDeviceId(session.getDeviceId());
+
+            message.addHeader("connectTime", session.connectTime());
+            message.addHeader("from", "session");
+            //子设备会话时添加上级设备id到header中，下游可以直接通过获取header来获取上级设备id
+            if (session.isWrapFrom(ChildrenDeviceSession.class)) {
+                ChildrenDeviceSession child = session.unwrap(ChildrenDeviceSession.class);
+                message.addHeader("parentId", child.getParentDevice().getDeviceId());
+            }
+            return this
+                    .onMessage(message)
+                    .onErrorResume(doOnError);
+
+        });
+
     }
 
     public static Flux<String> createDeviceMessageTopic(DeviceRegistry deviceRegistry, Message message) {
@@ -167,20 +221,20 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
                     return Mono.empty();
                 }
                 return deviceRegistry
-                    .getDevice(deviceId)
-                    .flatMap(configGetter)
-                    .defaultIfEmpty(emptyValues)
-                    .flatMapIterable(configs -> {
-                        configs.getAllValues().forEach(deviceMessage::addHeader);
-                        String productId = deviceMessage.getHeader(PropertyConstants.productId).orElse("null");
-                        String topic = createDeviceMessageTopic(productId, deviceId, deviceMessage);
-                        List<String> topics = new ArrayList<>(2);
-                        topics.add(topic);
-                        configs.getValue(PropertyConstants.orgId)
-                            .ifPresent(orgId -> topics.add("/org/" + orgId + topic));
+                        .getDevice(deviceId)
+                        .flatMap(configGetter)
+                        .defaultIfEmpty(emptyValues)
+                        .flatMapIterable(configs -> {
+                            configs.getAllValues().forEach(deviceMessage::addHeader);
+                            String productId = deviceMessage.getHeader(PropertyConstants.productId).orElse("null");
+                            String topic = createDeviceMessageTopic(productId, deviceId, deviceMessage);
+                            List<String> topics = new ArrayList<>(2);
+                            topics.add(topic);
+                            configs.getValue(PropertyConstants.orgId)
+                                   .ifPresent(orgId -> topics.add("/org/" + orgId + topic));
 
-                        return topics;
-                    });
+                            return topics;
+                        });
             }
             return Mono.just("/device/unknown/message/unknown");
         });
@@ -188,10 +242,10 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
 
     public static String createDeviceMessageTopic(String productId, String deviceId, DeviceMessage message) {
         StringBuilder builder = new StringBuilder(64)
-            .append("/device/")
-            .append(productId)
-            .append("/")
-            .append(deviceId);
+                .append("/device/")
+                .append(productId)
+                .append("/")
+                .append(deviceId);
 
         appendDeviceMessageTopic(message, builder);
         return builder.toString();
@@ -221,23 +275,24 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
         if (null == message) {
             return Mono.empty();
         }
+        message.addHeaderIfAbsent(PropertyConstants.uid, IDGenerator.RANDOM.generate());
         return this
-            .getTopic(message)
-            .flatMap(topic -> eventBus.publish(topic, message).then())
-            .onErrorContinue(doOnError)
-            .then();
+                .getTopic(message)
+                .flatMap(topic -> eventBus.publish(topic, message).then())
+                .onErrorResume(doOnError)
+                .then();
     }
 
     private Flux<String> getTopic(Message message) {
         Flux<String> topicsStream = createDeviceMessageTopic(registry, message);
         if (message instanceof ChildDeviceMessage) { //子设备消息
             return this
-                .onMessage(((ChildDeviceMessage) message).getChildDeviceMessage())
-                .thenMany(topicsStream);
+                    .onMessage(((ChildDeviceMessage) message).getChildDeviceMessage())
+                    .thenMany(topicsStream);
         } else if (message instanceof ChildDeviceMessageReply) { //子设备消息
             return this
-                .onMessage(((ChildDeviceMessageReply) message).getChildDeviceMessage())
-                .thenMany(topicsStream);
+                    .onMessage(((ChildDeviceMessageReply) message).getChildDeviceMessage())
+                    .thenMany(topicsStream);
         }
         return topicsStream;
     }
@@ -281,7 +336,11 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
     public Mono<Boolean> handleMessage(DeviceOperator device, @Nonnull Message message) {
         Mono<Boolean> then;
         if (message instanceof ChildDeviceMessageReply) {
-            then = handleChildrenDeviceMessageReply(((ChildDeviceMessageReply) message));
+            then = this
+                    .doReply(((ChildDeviceMessageReply) message))
+                    .then(
+                            handleChildrenDeviceMessageReply(((ChildDeviceMessageReply) message))
+                    );
         } else if (message instanceof ChildDeviceMessage) {
             then = handleChildrenDeviceMessageReply(((ChildDeviceMessage) message));
         } else if (message instanceof DeviceMessageReply) {
@@ -290,9 +349,9 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
             then = Mono.just(true);
         }
         return this
-            .onMessage(message)
-            .then(then)
-            .defaultIfEmpty(false);
+                .onMessage(message)
+                .then(then)
+                .defaultIfEmpty(false);
 
     }
 
@@ -307,9 +366,9 @@ public class DeviceMessageConnector implements DecodedClientMessageHandler {
             log.debug("reply message {}", reply.getMessageId());
         }
         return messageHandler
-            .reply(reply)
-            .thenReturn(true)
-            .doOnError((error) -> log.error("reply message error", error))
-            ;
+                .reply(reply)
+                .thenReturn(true)
+                .doOnError((error) -> log.error("reply message error", error))
+                ;
     }
 }
